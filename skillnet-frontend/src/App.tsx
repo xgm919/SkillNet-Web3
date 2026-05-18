@@ -1,70 +1,47 @@
 import { useState, useEffect, useRef } from 'react'
 import axios from 'axios'
+import { ethers } from 'ethers'
 import type { Course } from './types'
 
-// 🌐 引入波卡 (Polkadot/Substrate) 生态核心依赖
-import { ApiPromise, WsProvider } from '@polkadot/api'
-import { ContractPromise } from '@polkadot/api-contract'
-import { web3Accounts, web3Enable, web3FromAddress } from '@polkadot/extension-dapp'
+// ✅ 引入老付刚给的最终版 Solidity ABI
+import SkillBadgeABI from './abi/ABI.json' 
 
-// ✅ 究极修复：精准匹配你现在的奇葩目录结构 (文件夹 SkillBadge.sol 下的 metadata(1).json)
-import SkillBadgeData from './abi/SkillBadge.sol/metadata(1).json' 
+// ✅ 老付最新的智能合约主地址
+const CONTRACT_ADDRESS = '0x01624B8478EAeA87F43C7e75aaD41999AA7bF59E'; 
 
-// 引入工具库
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Home, BookOpen, ShoppingBag, User, Bell, CheckCircle2, Circle, TrendingUp, Target, Activity, Sparkles, CalendarDays, Zap, Camera, Trophy, Medal, Hexagon, Radio, Compass } from 'lucide-react'
+import { Home, BookOpen, ShoppingBag, User, Bell, CheckCircle2, Circle, TrendingUp, Target, Sparkles, CalendarDays, Zap, Camera, Trophy, Medal, Hexagon, Radio, Compass } from 'lucide-react'
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, BarChart, Bar } from 'recharts'
 
-// 🔌 [波卡合约配置]
-const WS_PROVIDER_URL = 'ws://127.0.0.1:9944'; // 付同学提供的本地节点
-const CONTRACT_ADDRESS = ''; // ⚠️ 等待付同学把一长串的合约地址发给你后，填在这里！
-// 强行绕过 TypeScript 对 JSON 的严格类型审查
-const NFT_CONTRACT_ABI = SkillBadgeData as any;
-
-// 🛒 极客商城商品配置
-const mallItems = [
-  { id: 1, name: 'QQ音乐 绿钻VIP (周卡)', points: 30, image: '/images/qq-zhouka.jpg' },
-  { id: 2, name: 'QQ音乐 绿钻VIP (月卡)', points: 100, image: '/images/qq-yueka.jpg' },
-  { id: 3, name: 'QQ音乐 绿钻VIP (年卡)', points: 1000, image: '/images/qq-nianka.jpg' },
-  { id: 4, name: '饿了么 超级会员 (月卡)', points: 100, image: '/images/elm.jpg' },
-  { id: 5, name: '爱奇艺 黄金VIP (季卡)', points: 450, image: '/images/aiqiyi-jika.jpg' },
-  { id: 6, name: '腾讯视频 VIP (月卡)', points: 150, image: '/images/tengxun-yueka.jpg' },
-  { id: 7, name: '腾讯视频 VIP (年卡)', points: 1500, image: '/images/tengxun-nianka.jpg' },
-  { id: 8, name: '美团 超级外卖红包', points: 50, image: '/images/meituan.jpg' }
-];
-
 function App() {
-  // 核心导航栏状态
   const [activeTab, setActiveTab] = useState<'home' | 'library' | 'tasks' | 'mall' | 'profile'>('home') 
   const [userAddress, setUserAddress] = useState<string | null>(null);
   
-  // 🚀 核心数据状态：绝对纯净，0 兜底，0 假数据！
   const [userPoints, setUserPoints] = useState(0); 
   const [earnHistory, setEarnHistory] = useState<any[]>([]); 
   const [redemptionHistory, setRedemptionHistory] = useState<any[]>([]);
   const [recommendations, setRecommendations] = useState<Course[]>([]);
+  const [mallItems, setMallItems] = useState<any[]>([]); 
+  const [tasks, setTasks] = useState<any[]>([]);
   
-  // 顶级特性数据源
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [globalActivities, setGlobalActivities] = useState<any[]>([]);
-  const [sbtBadges, setSbtBadges] = useState<any[]>([]);
+  const [sbtBadges] = useState<any[]>([]);
 
   const [loading, setLoading] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false);
   
-  // 答题与课程状态
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null)
   const [answers, setAnswers] = useState<string[]>([])
-  const [isSubmitting, setIsSubmitting] = useState(false)
   const [isViewingVideo, setIsViewingVideo] = useState(true) 
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [isMinting, setIsMinting] = useState(false)
+  const [isTaskSubmitting, setIsTaskSubmitting] = useState(false)
 
-  // UI 交互状态
   const [showNotifications, setShowNotifications] = useState(false); 
   const [hasUnread, setHasUnread] = useState(true); 
   const [chartView, setChartView] = useState<'week' | 'month'>('week'); 
 
-  // 👤 自定义头像逻辑
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [customAvatar, setCustomAvatar] = useState<string>(() => {
     return localStorage.getItem('userAvatar') || "https://github.com/shadcn.png";
@@ -89,35 +66,62 @@ function App() {
     setAnswers(new Array(course.questions?.length || 0).fill(""));
   };
 
-  // ==========================================
-  // 🔌 [波卡链上数据枢纽]: 智能合约与链下节点同步中心
-  // ==========================================
   const syncDataFromRemote = async (address: string) => {
+    if (!CONTRACT_ADDRESS || !(window as any).ethereum) return;
+
     try {
-      console.log(`📡 准备向预言机与波卡节点 ${WS_PROVIDER_URL} 请求数据...`);
-      
-      if (CONTRACT_ADDRESS) {
-        const provider = new WsProvider(WS_PROVIDER_URL);
-        const api = await ApiPromise.create({ provider });
-        const contract = new ContractPromise(api, NFT_CONTRACT_ABI, CONTRACT_ADDRESS);
+      const provider = new ethers.BrowserProvider((window as any).ethereum);
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, SkillBadgeABI, provider);
 
-        const { result, output } = await contract.query.get_user_status(
-          address, 
-          { gasLimit: api?.registry.createType('WeightV2', { refTime: 5000000000, proofSize: 1000000 }) }, 
-          address
-        );
+      // 1. 同步个人积分
+      const userData = await contract.get_user_status(address);
+      if (userData) {
+         setUserPoints(Number(userData.total_points || 0));
+      }
 
-        if (result.isOk && output) {
-           const userData: any = output.toJSON();
-           if (userData && userData.ok) {
-             setUserPoints(userData.ok.total_points || 0);
-           }
-        }
+      // 2. 同步排行榜
+      const topData = await contract.get_top_five();
+      if (topData && topData.length > 0) {
+         const parsedLeaderboard = topData.map((user: any) => ({
+             address: user.account || user[0], 
+             points: Number(user.points || user[1])
+         }));
+         setLeaderboard(parsedLeaderboard);
+      }
+
+      // 3. 缝合商城数据 (老付终于补齐了全量抓取接口 get_all_mall_items)
+      try {
+         const onChainItems = await contract.get_all_mall_items();
+         
+         // 过滤出 is_active 为 true 的商品
+         const activeOnChainItems = onChainItems.filter((item: any) => item.is_active === true || item[2] === true);
+         
+         if (activeOnChainItems.length > 0) {
+            // 拉取老孙的皮肉数据
+            const metaRes = await axios.get('https://sun-metadata-server.local/api/mall_items');
+            const offChainMetadata = metaRes.data; 
+
+            const items = activeOnChainItems.map((item: any) => {
+                const id = Number(item.item_id || item[0]);
+                const price = Number(item.price || item[1]);
+                const meta = offChainMetadata[id];
+                return {
+                    id: id,
+                    points: price, // 严格以链上价格为准
+                    name: meta?.name || `未知资产 #${id}`,
+                    image: meta?.imageUrl || '' 
+                };
+            });
+            setMallItems(items);
+         }
+      } catch (e) {
+         console.debug("商城数据缝合被中断: 等待老孙元数据接入");
+         setMallItems([]);
       }
 
       setHasUnread(true);
     } catch (err) {
-      console.warn("❌ 节点数据拉取失败，处于离线静默状态", err);
+      console.warn("❌ 链上状态拉取失败 (EVM)", err);
     }
   };
 
@@ -125,7 +129,53 @@ function App() {
     if (userAddress) syncDataFromRemote(userAddress);
   }, [userAddress]);
 
-  // 📈 图表数据计算
+  // 🔊 监听 EVM 底层出块事件 (Event)
+  useEffect(() => {
+    if (!CONTRACT_ADDRESS || !(window as any).ethereum) return;
+
+    const provider = new ethers.BrowserProvider((window as any).ethereum);
+    const contract = new ethers.Contract(CONTRACT_ADDRESS, SkillBadgeABI, provider);
+
+    const onCourseCompleted = (user: string, courseId: any, pointsGained: any) => {
+      console.debug(`CourseID ${courseId.toString()}`);
+      setGlobalActivities(prev => [{
+        address: `${user.substring(0, 6)}...${user.substring(user.length - 4)}`,
+        action: '完成极客挑战',
+        points: pointsGained.toString()
+      }, ...prev].slice(0, 10)); 
+    };
+
+    const onItemRedeemed = (user: string, itemId: any, cost: any) => {
+      console.debug(`ItemID ${itemId.toString()}`);
+      setGlobalActivities(prev => [{
+        address: `${user.substring(0, 6)}...${user.substring(user.length - 4)}`,
+        action: '在商城兑换权益',
+        points: `-${cost.toString()}`
+      }, ...prev].slice(0, 10));
+    };
+
+    // 🚀 新增监听：TaskCompleted 事件
+    const onTaskCompleted = (user: string, taskId: any, pointsGained: any) => {
+      console.debug(`TaskID ${taskId.toString()}`);
+      setGlobalActivities(prev => [{
+        address: `${user.substring(0, 6)}...${user.substring(user.length - 4)}`,
+        action: '完成极客任务',
+        points: pointsGained.toString()
+      }, ...prev].slice(0, 10)); 
+      if (userAddress) syncDataFromRemote(userAddress); // 任务完成刷新积分
+    };
+
+    contract.on("CourseCompleted", onCourseCompleted);
+    contract.on("ItemRedeemed", onItemRedeemed);
+    contract.on("TaskCompleted", onTaskCompleted);
+
+    return () => { 
+      contract.removeAllListeners("CourseCompleted");
+      contract.removeAllListeners("ItemRedeemed");
+      contract.removeAllListeners("TaskCompleted");
+    };
+  }, [userAddress]);
+
   const getWeeklyData = () => {
     const data = [];
     let cumulative = 0;
@@ -169,28 +219,10 @@ function App() {
     ];
   };
 
-  const checkAllTasks = () => {
-    const today = new Date().toLocaleDateString();
-    const todaysLessons = earnHistory.filter((h: any) => new Date(h.createdAt).toLocaleDateString() === today);
-    const todaysRedeems = redemptionHistory.filter((r: any) => new Date(r.createdAt).toLocaleDateString() === today);
-    
-    return [
-      { id: 1, label: '观看课程视频', reward: 5, completed: todaysLessons.length >= 1, target: 1, current: todaysLessons.length },
-      { id: 2, label: '得到一次奖励', reward: 10, completed: todaysLessons.length >= 1, target: 1, current: todaysLessons.length >= 1 ? 1 : 0 },
-      { id: 3, label: '观看 5 个视频', reward: 20, completed: todaysLessons.length >= 5, target: 5, current: todaysLessons.length },
-      { id: 4, label: '在商城完成 1 次兑换', reward: 15, completed: todaysRedeems.length >= 1, target: 1, current: todaysRedeems.length },
-      { id: 5, label: '连续学习打卡 3 天', reward: 50, completed: false, target: 3, current: 1 },
-      { id: 6, label: '分享专属邀请链接', reward: 30, completed: false, target: 1, current: 0 }
-    ];
-  };
-
-  const allTasks = checkAllTasks();
-  const homePreviewTasks = allTasks.slice(0, 3);
-  
   const calculateDailyCompletionRate = () => {
-    const dailyTasks = allTasks.slice(0, 4); 
-    const completedCount = dailyTasks.filter(t => t.completed).length;
-    return Math.round((completedCount / dailyTasks.length) * 100) + '%';
+    if (tasks.length === 0) return '0%';
+    const completedCount = tasks.filter(t => t.completed).length;
+    return Math.round((completedCount / tasks.length) * 100) + '%';
   };
 
   const renderCalendar = () => {
@@ -236,44 +268,50 @@ function App() {
     );
   };
 
-  // 🦊 唤起波卡钱包 (Polkadot.js / Subwallet)
   const connectWallet = async () => {
     try {
       setIsConnecting(true);
-      const extensions = await web3Enable('SkillNet Web3');
-      if (extensions.length === 0) {
-        alert('🦊 请先安装 Polkadot.js 或 Subwallet 插件钱包！');
+      if (!(window as any).ethereum) {
+        alert('🦊 请先安装 MetaMask (小狐狸) 插件钱包！');
         setIsConnecting(false);
         return;
       }
-      const allAccounts = await web3Accounts();
-      if (allAccounts.length > 0) {
-        setUserAddress(allAccounts[0].address);
-      } else {
-        alert('⚠️ 未找到钱包账户，请在波卡插件中创建或导入账户。');
-      }
+      
+      const provider = new ethers.BrowserProvider((window as any).ethereum);
+      await provider.send("eth_requestAccounts", []);
+      const signer = await provider.getSigner();
+      const address = await signer.getAddress();
+      
+      setUserAddress(address);
     } catch (error) {
-      console.error("波卡钱包连接失败", error);
+      console.error("MetaMask 连接失败", error);
     } finally {
       setIsConnecting(false);
     }
   };
 
+  // 统一从老孙的后端拉取元数据
   useEffect(() => {
-    const fetchCoursesFromAI = async () => {
+    const fetchMetadataFromSun = async () => {
       setLoading(true);
       try {
-        throw new Error("AI 接口待接入"); 
+        // 拉取课程
+        const coursesRes = await axios.get('https://sun-metadata-server.local/api/courses');
+        setRecommendations(coursesRes.data);
+        
+        // 拉取任务列表
+        const tasksRes = await axios.get('https://sun-metadata-server.local/api/tasks');
+        setTasks(tasksRes.data);
       } catch (error) {
         setRecommendations([]);
+        setTasks([]);
       } finally { setLoading(false); }
     }
-    fetchCoursesFromAI();
+    fetchMetadataFromSun();
   }, [userAddress]);
 
   const handleSubmit = async () => {
-    if (!userAddress) return alert("⚠️ 请先连接波卡钱包！");
-    if (!CONTRACT_ADDRESS) return alert("⏳ 等待智能合约节点地址部署！");
+    if (!userAddress || !CONTRACT_ADDRESS) return alert("请连接钱包并等待合约部署！");
     setIsSubmitting(true);
     
     try {
@@ -287,62 +325,116 @@ function App() {
       );
 
       if(verifyRes.data && verifyRes.data.success !== false) {
-         const expectedHash = verifyRes.data.expected_hash; 
-         const courseId = selectedCourse?.id || 1;
-         const score = 100; 
-         const correctRate = 100; 
-         const difficulty = selectedCourse?.difficulty || 1;
+         const { signature, score, correctRate } = verifyRes.data; 
+         const courseId = selectedCourse?.id;
+         const difficulty = selectedCourse?.difficulty;
 
-         const provider = new WsProvider(WS_PROVIDER_URL);
-         const api = await ApiPromise.create({ provider });
-         const contract = new ContractPromise(api, NFT_CONTRACT_ABI, CONTRACT_ADDRESS);
-         
-         const injector = await web3FromAddress(userAddress);
-         
-         const tx = contract.tx.completeCourse(
-            { gasLimit: api.registry.createType('WeightV2', { refTime: 5000000000, proofSize: 1000000 }) }, 
-            courseId, score, correctRate, difficulty, expectedHash
-         );
+         if (!signature || typeof score === 'undefined') {
+           throw new Error("AI 预言机未返回合法的 signature 签名串");
+         }
 
-         await tx.signAndSend(userAddress, { signer: injector.signer }, ({ status }) => {
-            if (status.isInBlock) {
-               console.log(`✅ 交易打包进区块: ${status.asInBlock.toHex()}`);
-               
-               const reward = selectedCourse?.baseReward || 20;
-               setUserPoints(prev => prev + reward);
-               setEarnHistory(prev => [
-                 { title: selectedCourse?.title, reward: reward, createdAt: new Date().toISOString() },
+         const provider = new ethers.BrowserProvider((window as any).ethereum);
+         const signer = await provider.getSigner();
+         const contract = new ethers.Contract(CONTRACT_ADDRESS, SkillBadgeABI, signer);
+         
+         const tx = await contract.complete_course(courseId, score, correctRate, difficulty, signature);
+         const receipt = await tx.wait();
+         
+         if (receipt.status === 1) {
+             console.log(`✅ EVM 交易已入块: ${receipt.hash}`);
+             syncDataFromRemote(userAddress); 
+             setEarnHistory(prev => [
+                 { title: selectedCourse?.title, reward: selectedCourse?.baseReward || 0, createdAt: new Date().toISOString() },
                  ...prev
-               ]);
-               setSelectedCourse(null);
-               setIsSubmitting(false);
-               alert(`🎉 恭喜！智能合约已验证通过，成绩上链并为您发放 ${reward} 积分！`);
-            }
-         });
+             ]);
+             setSelectedCourse(null);
+             setIsSubmitting(false);
+             alert(`🎉 恭喜！课程智能合约验签通过，成绩已上链！`);
+         }
       } else {
          alert("❌ AI 验证未通过，检测到异常作答！");
          setIsSubmitting(false);
       }
     } catch (error) {
-      console.error("链上交互或 AI 节点失败:", error);
-      alert("❌ 无法连接到验证节点或合约网络，请检查是否启动了本地节点。");
+      console.error("链上交互失败:", error);
+      alert("❌ 无法上链。原因可能为预言机未返回 signature，或网络拥堵。");
       setIsSubmitting(false);
     }
   };
 
-  const handleRedeem = async (item: typeof mallItems[0]) => {
+  // 🚀 核心逻辑更新：任务系统的链上提交
+  const handleCompleteTask = async (task: any) => {
+    if (!userAddress || !CONTRACT_ADDRESS) return alert("请连接钱包！");
+    setIsTaskSubmitting(true);
+
+    try {
+       // 1. 去老兰的预言机判定任务（签到/看视频时长），获取签名
+       const verifyRes = await axios.post('https://some-bees-hope.loca.lt/api/validate_task', 
+         { userAddress: userAddress, taskId: task.id },
+         { headers: { 'bypass-tunnel-reminder': 'true' } }
+       );
+
+       if (verifyRes.data && verifyRes.data.success !== false) {
+           const { reward_points, signature } = verifyRes.data;
+           
+           if (!signature || typeof reward_points === 'undefined') {
+              throw new Error("老兰未返回 task signature 或 reward_points");
+           }
+
+           // 2. 拿到签名，去老付的合约要分
+           const provider = new ethers.BrowserProvider((window as any).ethereum);
+           const signer = await provider.getSigner();
+           const contract = new ethers.Contract(CONTRACT_ADDRESS, SkillBadgeABI, signer);
+
+           // 严丝合缝对齐 ABI: complete_task(task_id, reward_points, signature)
+           const tx = await contract.complete_task(task.id, reward_points, signature);
+           const receipt = await tx.wait();
+
+           if (receipt.status === 1) {
+               syncDataFromRemote(userAddress); // 刷新积分
+               setTasks(tasks.map(t => t.id === task.id ? { ...t, completed: true, current: t.target } : t));
+               setIsTaskSubmitting(false);
+               alert(`🎉 恭喜！任务防伪验证通过，积分已发放！`);
+           }
+       } else {
+           alert("❌ 任务未达标，预言机拒绝盖章！");
+           setIsTaskSubmitting(false);
+       }
+    } catch (err) {
+       console.error("任务上链失败:", err);
+       alert("❌ 任务校验失败。老兰接口宕机或用户取消签名。");
+       setIsTaskSubmitting(false);
+    }
+  };
+
+  const handleRedeem = async (item: any) => {
+    if (!userAddress || !CONTRACT_ADDRESS) return alert("请配置合约");
+    
     if (userPoints >= item.points) {
       if (window.confirm(`确定花费 ${item.points} 积分兑换【${item.name}】吗？`)) {
         setIsMinting(true);
-        setTimeout(() => {
-          setIsMinting(false);
-          setUserPoints(prev => prev - item.points);
-          setRedemptionHistory(prev => [
-            { itemName: item.name, cost: item.points, createdAt: new Date().toISOString() },
-            ...prev
-          ]);
-          alert('✅ 兑换成功，数字资产已上链！');
-        }, 1000);
+        try {
+           const provider = new ethers.BrowserProvider((window as any).ethereum);
+           const signer = await provider.getSigner();
+           const contract = new ethers.Contract(CONTRACT_ADDRESS, SkillBadgeABI, signer);
+           
+           const tx = await contract.redeem_item(item.id);
+           const receipt = await tx.wait();
+
+           if (receipt.status === 1) {
+              setIsMinting(false);
+              syncDataFromRemote(userAddress);
+              setRedemptionHistory(prev => [
+                { itemName: item.name, cost: item.points, createdAt: new Date().toISOString() },
+                ...prev
+              ]);
+              alert('✅ 兑换成功，EVM 合约已记录！');
+           }
+        } catch(err) {
+           console.error(err);
+           setIsMinting(false);
+           alert('兑换异常');
+        }
       }
     } else { alert('❌ 积分余额不足！'); }
   };
@@ -426,11 +518,11 @@ function App() {
                  <div className="p-2 space-y-1">
                    {userAddress ? (
                      <div className="px-4 py-3 hover:bg-white/5 rounded-xl cursor-pointer transition-colors">
-                       <p className="text-sm font-bold text-white mb-1 flex items-center gap-2"><CheckCircle2 size={14} className="text-green-400"/> 波卡钱包连接成功</p>
+                       <p className="text-sm font-bold text-white mb-1 flex items-center gap-2"><CheckCircle2 size={14} className="text-green-400"/> 钱包连接成功</p>
                        <p className="text-xs text-gray-500">欢迎来到 SkillNet，您的链上旅程已开启。</p>
                      </div>
                    ) : (
-                     <div className="px-4 py-8 text-center text-gray-500 text-sm">暂无新通知，请先连接波卡钱包。</div>
+                     <div className="px-4 py-8 text-center text-gray-500 text-sm">暂无新通知，请先连接 MetaMask 钱包。</div>
                    )}
                  </div>
                </div>
@@ -457,13 +549,13 @@ function App() {
                                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
                                    <span className="text-purple-400">{act.address}</span> 
                                    <span className="text-gray-400">{act.action}</span>
-                                   <span className="text-green-400 font-bold drop-shadow-[0_0_5px_rgba(74,222,128,0.4)]">+{act.points} 积分</span>
+                                   <span className={`font-bold drop-shadow-[0_0_5px_rgba(74,222,128,0.4)] ${act.points.includes('-') ? 'text-red-400' : 'text-green-400'}`}>{act.points.includes('-') ? '' : '+'}{act.points} 积分</span>
                                 </span>
                              ))}
                           </div>
                        ) : (
                           <div className="w-full text-center text-[12px] text-gray-500 font-mono tracking-widest">
-                             [ 📡 预言机状态：静默。等待链下节点推送全网事件... ]
+                             [ 📡 EVM 事件监听已就绪。等待智能合约出块... ]
                           </div>
                        )}
                     </div>
@@ -517,6 +609,7 @@ function App() {
                       <div className="flex flex-col items-center justify-center">
                          <button 
                            onClick={connectWallet} 
+                           disabled={isConnecting}
                            className={`relative group outline-none ${!userAddress ? 'animate-pulse' : ''} hover:animate-none transition-all duration-300`}
                          >
                            <div className="absolute inset-0 bg-gradient-to-b from-purple-500 to-blue-600 rounded-xl blur opacity-60 group-hover:opacity-100 transition-opacity duration-300"></div>
@@ -524,7 +617,7 @@ function App() {
                              {userAddress ? (
                                <><div className="w-2.5 h-2.5 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"></div><span className="font-bold text-white text-sm">已连接节点</span></>
                              ) : (
-                               <><Zap size={18} className="text-purple-400 group-hover:text-white transition-colors" /><span className="font-bold text-white text-sm drop-shadow-md">连接 Web3 钱包</span></>
+                               <><Zap size={18} className="text-purple-400 group-hover:text-white transition-colors" /><span className="font-bold text-white text-sm drop-shadow-md">{isConnecting ? '连接中...' : '连接 MetaMask'}</span></>
                              )}
                            </div>
                          </button>
@@ -541,7 +634,7 @@ function App() {
                        <h3 className="font-bold text-white flex items-center gap-2"><User size={16} className="text-purple-400"/> 今日任务</h3>
                     </div>
                     <div className="space-y-4 flex-1 overflow-hidden">
-                      {homePreviewTasks.map((task: any) => (
+                      {tasks.length > 0 ? tasks.slice(0,3).map((task: any) => (
                         <div key={task.id} className="relative">
                           <div className="flex justify-between text-xs font-bold text-gray-300 mb-2">
                              <span>{task.label}</span>
@@ -551,7 +644,9 @@ function App() {
                              <div className={`h-full transition-all duration-1000 ${task.completed ? 'bg-green-500' : 'bg-gradient-to-r from-purple-500 to-blue-500'}`} style={{ width: `${Math.min((task.current / task.target) * 100, 100)}%` }}></div>
                           </div>
                         </div>
-                      ))}
+                      )) : (
+                        <div className="flex h-full items-center justify-center text-xs text-gray-600">等待管理端老孙皮肉数据...</div>
+                      )}
                     </div>
                     <button onClick={() => setActiveTab('tasks')} className="w-full mt-6 bg-purple-600 hover:bg-purple-500 text-white font-bold text-sm py-3 rounded-xl transition-all shadow-lg shadow-purple-600/20 shrink-0 relative z-20 pointer-events-auto">
                       前往任务中心
@@ -638,7 +733,7 @@ function App() {
                              <div key={idx} className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5 hover:border-purple-500/30 transition-colors">
                                <div className="flex items-center gap-3">
                                  <span className={`font-black text-lg w-6 ${idx === 0 ? 'text-yellow-400' : idx === 1 ? 'text-gray-300' : idx === 2 ? 'text-orange-400' : 'text-gray-600'}`}>#{idx + 1}</span>
-                                 <span className="font-mono text-sm text-gray-200">{user.address}</span>
+                                 <span className="font-mono text-sm text-gray-200">{`${user.address.substring(0,6)}...${user.address.substring(user.address.length-4)}`}</span>
                                </div>
                                <span className="text-purple-400 font-bold text-sm">{user.points} 积分</span>
                              </div>
@@ -646,7 +741,7 @@ function App() {
                          ) : (
                            <div className="h-full flex flex-col items-center justify-center py-10 text-gray-500 text-sm border border-dashed border-gray-800 rounded-2xl bg-white/5">
                               <Trophy size={32} className="mb-3 opacity-30 text-gray-600 animate-pulse" />
-                              <p>等待智能合约同步全网排名...</p>
+                              <p>{CONTRACT_ADDRESS ? '排行榜暂无数据' : '缺少合约配置'}</p>
                            </div>
                          )}
                       </div>
@@ -657,7 +752,9 @@ function App() {
                    <div className="w-full h-full bg-gradient-to-br from-[#12141F] to-[#0A0C12] border border-white/10 rounded-[2.5rem] p-8 shadow-[-15px_15px_30px_rgba(0,0,0,0.5)] flex flex-col transition-all duration-500 ease-out [transform:rotateX(15deg)_rotateY(-15deg)] group-hover:[transform:rotateX(0deg)_rotateY(0deg)_scale(1.02)] relative overflow-hidden">
                       <div className="flex justify-between items-center mb-6 shrink-0 relative z-10">
                         <h3 className="font-bold text-white flex items-center gap-2"><Zap size={18} className="text-purple-400"/> 极客链上能量阵</h3>
-                        <span className="text-xs bg-white/5 text-gray-400 px-2 py-1 rounded border border-white/5">预言机同步中</span>
+                        <span className="text-xs bg-white/5 text-gray-400 px-2 py-1 rounded border border-white/5">
+                            {CONTRACT_ADDRESS ? 'EVM 直连中' : '离线空转'}
+                        </span>
                       </div>
                       
                       <div className="flex-1 flex items-center justify-center relative">
@@ -671,7 +768,7 @@ function App() {
                                {userPoints > 0 ? userPoints : 'AWAITING'}
                             </p>
                             <p className="text-xs text-gray-400 font-mono mt-2 tracking-widest">
-                               {userPoints > 0 ? 'CURRENT POWER' : 'ORACLE SYNC'}
+                               {userPoints > 0 ? 'ON-CHAIN POWER' : 'EVM SYNC'}
                             </p>
                          </div>
                       </div>
@@ -691,7 +788,7 @@ function App() {
                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
                       {loading ? (
                          <div className="col-span-full py-16 text-center text-gray-500 text-sm border border-dashed border-gray-800 rounded-2xl bg-white/5 animate-pulse">
-                            AI 节点数据同步中...
+                            数据链路拉取中...
                          </div>
                       ) : recommendations.length > 0 ? (
                          recommendations.slice(0, 4).map((course: any, idx: number) => (
@@ -701,15 +798,15 @@ function App() {
                                </div>
                                <h4 className="font-bold text-base text-gray-200 hover:text-white mb-2 flex-grow">{course.title}</h4>
                                <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/5">
-                                 <span className="text-xs text-gray-500">难度 Lvl.{course.difficulty || 1}</span>
-                                 <span className="text-xs text-green-400 font-mono font-bold bg-green-500/10 px-2 py-1 rounded">+{course.baseReward || 20} 积分</span>
+                                 <span className="text-xs text-gray-500">难度 Lvl.{course.difficulty}</span>
+                                 <span className="text-xs text-green-400 font-mono font-bold bg-green-500/10 px-2 py-1 rounded">+{course.baseReward} 积分</span>
                                </div>
                             </div>
                          ))
                       ) : (
                          <div className="col-span-full py-16 text-center text-gray-500 text-sm border border-dashed border-gray-800 rounded-2xl bg-white/5">
                             <Hexagon size={40} className="mx-auto mb-3 opacity-30 text-gray-600" />
-                            <p>AI 推荐引擎静默，等待预言机下发课程数据</p>
+                            <p>链下元数据未注入，前端空转状态。</p>
                          </div>
                       )}
                    </div>
@@ -738,7 +835,7 @@ function App() {
                   </h3>
                   
                   <div className="space-y-4">
-                    {allTasks.map((task: any) => (
+                    {tasks.length > 0 ? tasks.map((task: any) => (
                       <div key={task.id} className={`p-6 rounded-2xl border transition-all ${task.completed ? 'bg-green-500/5 border-green-500/20 opacity-70' : 'bg-[#1A1D27] border-white/5 hover:border-purple-500/30'}`}>
                         <div className="flex justify-between items-center mb-4">
                           <div className="flex items-center gap-4">
@@ -753,8 +850,12 @@ function App() {
                               💎 +{task.reward}
                             </span>
                             {!task.completed && (
-                              <button onClick={() => setActiveTab('library')} className="bg-white/5 hover:bg-white/10 text-sm font-bold text-gray-300 px-4 py-2 rounded-xl transition-colors">
-                                去完成
+                              <button 
+                                disabled={isTaskSubmitting}
+                                onClick={() => handleCompleteTask(task)} 
+                                className="bg-white/5 hover:bg-white/10 text-sm font-bold text-gray-300 px-4 py-2 rounded-xl transition-colors disabled:opacity-50"
+                              >
+                                {isTaskSubmitting ? '验签中...' : '提交验证'}
                               </button>
                             )}
                           </div>
@@ -763,7 +864,11 @@ function App() {
                           <div className={`h-full transition-all duration-1000 ${task.completed ? 'bg-green-500' : 'bg-gradient-to-r from-purple-600 to-blue-500'}`} style={{ width: `${Math.min((task.current / task.target) * 100, 100)}%` }}></div>
                         </div>
                       </div>
-                    ))}
+                    )) : (
+                      <div className="py-16 text-center text-gray-500 text-sm border border-dashed border-gray-800 rounded-2xl bg-white/5">
+                         等待老孙的链下元数据 API 注入任务...
+                      </div>
+                    )}
                   </div>
                 </div>
              </div>
@@ -778,7 +883,7 @@ function App() {
                    
                    {loading ? (
                      <div className="z-10 bg-[#0F111A] p-6 rounded-2xl border border-purple-500/50 animate-pulse text-purple-400 font-mono text-sm mt-20">
-                       [ AI 路由计算中，正在为您生成最佳学习路径... ]
+                       [ AI 预言机计算中，正在为您生成最佳学习路径... ]
                      </div>
                    ) : recommendations.length > 0 ? (
                      recommendations.map((course: any, idx: number) => (
@@ -788,8 +893,8 @@ function App() {
                            <div onClick={() => handleEnterCourse(course)} className="z-10 w-[45%] bg-[#1A1D27] border border-white/10 p-6 rounded-2xl hover:border-purple-500 hover:shadow-[0_0_30px_rgba(168,85,247,0.3)] transition-all cursor-pointer group">
                              <h3 className="font-bold text-lg text-white group-hover:text-purple-300 mb-2">{course.title}</h3>
                              <div className="flex justify-between items-center mt-4">
-                                <span className="text-xs text-gray-500 font-mono">等级 Lvl.{course.difficulty || 1}</span>
-                                <span className="text-xs font-black text-green-400 bg-green-500/10 px-2 py-1 rounded">+{course.baseReward || 20} 积分</span>
+                                <span className="text-xs text-gray-500 font-mono">等级 Lvl.{course.difficulty}</span>
+                                <span className="text-xs font-black text-green-400 bg-green-500/10 px-2 py-1 rounded">+{course.baseReward} 积分</span>
                              </div>
                            </div>
                            
@@ -799,7 +904,7 @@ function App() {
                    ) : (
                      <div className="z-10 bg-[#0F111A] border border-dashed border-gray-700 p-10 rounded-3xl text-center mt-20">
                         <Hexagon size={48} className="mx-auto text-gray-600 mb-4" />
-                        <p className="text-gray-500">技能树尚未解锁。等待后端 AI 节点下发课程数据。</p>
+                        <p className="text-gray-500">技能树尚未解锁。等待链下元数据下发。</p>
                      </div>
                    )}
                 </div>
@@ -810,11 +915,15 @@ function App() {
              <div className="max-w-7xl mx-auto pb-20">
                 <h2 className="text-4xl font-black mb-10">积分商城</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-10 p-4">
-                   {mallItems.map((item: any) => (
+                   {mallItems.length > 0 ? mallItems.map((item: any) => (
                      <div key={item.id} className="relative group [perspective:1500px]">
                         <div className="h-[340px] w-full bg-gradient-to-br from-white/10 to-[#ffffff05] backdrop-blur-xl border border-white/20 rounded-3xl p-5 flex flex-col transition-all duration-700 ease-out shadow-[-20px_20px_30px_rgba(0,0,0,0.5)] group-hover:shadow-[0_0_50px_rgba(168,85,247,0.4)] [transform:rotateX(20deg)_rotateY(-20deg)] group-hover:[transform:rotateX(0deg)_rotateY(0deg)_scale(1.05)]">
                            <div className="h-40 rounded-2xl overflow-hidden mb-4 relative shadow-inner">
-                              <img src={item.image} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+                              {item.image ? (
+                                <img src={item.image} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+                              ) : (
+                                <div className="w-full h-full bg-gray-900 flex items-center justify-center text-xs text-gray-500">图片缺失</div>
+                              )}
                               <div className="absolute inset-0 bg-gradient-to-t from-[#09090b]/90 via-transparent to-transparent opacity-80"></div>
                            </div>
                            <h4 className="text-base font-bold mb-1 truncate text-gray-200 group-hover:text-white transition-colors drop-shadow-md">{item.name}</h4>
@@ -822,13 +931,17 @@ function App() {
                               <span className="text-purple-400 font-black text-sm bg-purple-500/10 px-3 py-1.5 rounded-lg border border-purple-500/20 shadow-inner">
                                 💎 {item.points}
                               </span>
-                              <button onClick={() => handleRedeem(item)} className="bg-white/5 hover:bg-purple-600 text-gray-300 hover:text-white px-5 py-2 rounded-xl text-xs font-bold transition-all border border-white/10 hover:border-purple-500 shadow-lg">
-                                兑换
+                              <button disabled={isMinting} onClick={() => handleRedeem(item)} className="bg-white/5 hover:bg-purple-600 text-gray-300 hover:text-white px-5 py-2 rounded-xl text-xs font-bold transition-all border border-white/10 hover:border-purple-500 shadow-lg">
+                                {isMinting ? '兑换中...' : '链上兑换'}
                               </button>
                            </div>
                         </div>
                      </div>
-                   ))}
+                   )) : (
+                     <div className="col-span-full py-16 text-center text-gray-500 text-sm border border-dashed border-gray-800 rounded-2xl bg-white/5">
+                        等待老孙配置管理端皮肉 API，与链上库存进行骨肉缝合...
+                     </div>
+                   )}
                 </div>
              </div>
           )}
@@ -844,7 +957,7 @@ function App() {
                       <div className="space-y-4">
                         {earnHistory.length === 0 ? (
                            <div className="p-10 text-center border border-dashed border-gray-800 rounded-[1.5rem] bg-white/5">
-                             <p className="text-gray-500">暂无链上数据记录</p>
+                             <p className="text-gray-500">暂无链上记录</p>
                            </div>
                         ) : earnHistory.map((h: any, i: number) => (
                           <div key={i} className="bg-[#1A1D27] p-5 rounded-2xl border border-white/5 flex justify-between items-center hover:border-purple-500/30 transition-colors">
@@ -896,7 +1009,7 @@ function App() {
                          <div className="col-span-full py-16 text-center border border-dashed border-white/10 rounded-3xl">
                             <Sparkles size={48} className="mx-auto text-gray-600 mb-4 opacity-50" />
                             <p className="text-gray-400 font-bold">藏品柜空空如也</p>
-                            <p className="text-xs text-gray-600 mt-2">完成终极极客挑战，智能合约将为您空投不可篡改的 SBT 徽章。</p>
+                            <p className="text-xs text-gray-600 mt-2">完成挑战，智能合约将为您空投不可篡改的 SBT 徽章。</p>
                          </div>
                       )}
                    </div>
@@ -907,7 +1020,6 @@ function App() {
         </div>
       </main>
 
-      {/* 沉浸式答题弹窗 */}
       {selectedCourse && (
         <div className="fixed inset-0 z-50 bg-black/95 backdrop-blur-2xl flex items-center justify-center p-10 animate-in fade-in zoom-in-95 duration-300">
           <div className="bg-[#0F111A] border border-white/10 w-full max-w-5xl rounded-[3rem] p-12 relative h-[85vh] flex flex-col shadow-[0_0_50px_rgba(168,85,247,0.1)]">
@@ -918,7 +1030,7 @@ function App() {
                 {isViewingVideo ? (
                   <div className="aspect-video bg-[#050505] rounded-[2rem] overflow-hidden border border-white/5 flex items-center justify-center shadow-2xl relative">
                     <video src={selectedCourse.videoUrl} controls autoPlay className="w-full h-full" />
-                    {!selectedCourse.videoUrl && <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600"><BookOpen size={48} className="mb-4 opacity-30"/><p>等待视频流接入</p></div>}
+                    {!selectedCourse.videoUrl && <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600"><BookOpen size={48} className="mb-4 opacity-30"/><p>等待链下视频流解析</p></div>}
                   </div>
                 ) : (
                   <div className="space-y-6">
@@ -943,8 +1055,8 @@ function App() {
              </div>
              
              <div className="pt-8 mt-auto shrink-0">
-                <button onClick={isViewingVideo ? () => setIsViewingVideo(false) : handleSubmit} className="w-full py-5 rounded-2xl bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 font-black text-lg text-white shadow-lg shadow-purple-500/25 transition-all hover:scale-[1.02]">
-                   {isViewingVideo ? "✅ 视频学习完成，进入 AI 测验" : "🚀 提交后端 AI 预言机进行防伪验证"}
+                <button disabled={isSubmitting} onClick={isViewingVideo ? () => setIsViewingVideo(false) : handleSubmit} className="w-full py-5 rounded-2xl bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 font-black text-lg text-white shadow-lg shadow-purple-500/25 transition-all hover:scale-[1.02] disabled:opacity-50">
+                   {isViewingVideo ? "✅ 视频学习完成，进入验证测验" : (isSubmitting ? "🚀 正在调起 MetaMask 进行签名..." : "🚀 唤起 MetaMask 提交 EVM 验签")}
                 </button>
              </div>
           </div>
